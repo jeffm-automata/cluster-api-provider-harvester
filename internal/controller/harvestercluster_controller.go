@@ -302,61 +302,7 @@ func (r *HarvesterClusterReconciler) ReconcileNormal(scope *ClusterScope) (res c
 		return ctrl.Result{RequeueAfter: requeueTimeShort}, err
 	}
 
-	// Set TargetNamespaceReady condition to in progress
-	conditions.Set(scope.HarvesterCluster, v1.Condition{
-		Type:    infrav1.TargetNamespaceReadyCondition,
-		Status:  v1.ConditionFalse,
-		Reason:  "TargetNamespaceChecking",
-		Message: "Checking if target namespace exists",
-	})
-
-	// Check if TargetNamespace exists, if not create it
-	_, err = scope.HarvesterClient.CoreV1().Namespaces().Get(scope.Ctx, scope.HarvesterCluster.Spec.TargetNamespace, v1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			_, err = scope.HarvesterClient.CoreV1().Namespaces().Create(scope.Ctx, &apiv1.Namespace{
-				ObjectMeta: v1.ObjectMeta{
-					Name: scope.HarvesterCluster.Spec.TargetNamespace,
-				},
-			}, v1.CreateOptions{})
-			if err != nil {
-				logger.Error(err, "unable to create TargetNamespace")
-
-				conditions.Set(scope.HarvesterCluster, v1.Condition{
-					Type:    infrav1.TargetNamespaceReadyCondition,
-					Status:  v1.ConditionFalse,
-					Reason:  infrav1.TargetNamespaceNotReadyReason,
-					Message: fmt.Sprintf("Failed to create target namespace: %v", err),
-				})
-			} else {
-				logger.Error(err, "unable to get TargetNamespace in Harvester, problem with the HarvesterClient")
-
-				conditions.Set(scope.HarvesterCluster, v1.Condition{
-					Type:    infrav1.TargetNamespaceReadyCondition,
-					Status:  v1.ConditionFalse,
-					Reason:  infrav1.TargetNamespaceNotReadyReason,
-					Message: fmt.Sprintf("Unable to access target namespace: %v", err),
-				})
-			}
-		} else {
-			logger.Error(err, "unable to get TargetNamespace in Harvester, problem with the HarvesterClient")
-
-			conditions.Set(scope.HarvesterCluster, v1.Condition{
-				Type:    infrav1.TargetNamespaceReadyCondition,
-				Status:  v1.ConditionFalse,
-				Reason:  infrav1.TargetNamespaceNotReadyReason,
-				Message: fmt.Sprintf("Unable to access target namespace: %v", err),
-			})
-		}
-	} else {
-		// Target namespace exists and is accessible
-		conditions.Set(scope.HarvesterCluster, v1.Condition{
-			Type:    infrav1.TargetNamespaceReadyCondition,
-			Status:  v1.ConditionTrue,
-			Reason:  infrav1.TargetNamespaceReadyReason,
-			Message: "Target namespace exists and is accessible",
-		})
-	}
+	reconcileTargetNamespace(scope)
 
 	// Initializing return values
 	res = ctrl.Result{}
@@ -541,6 +487,69 @@ func (r *HarvesterClusterReconciler) ReconcileNormal(scope *ClusterScope) (res c
 	}
 
 	return res, err
+}
+
+// reconcileTargetNamespace checks that the target namespace exists in Harvester, creates it when it
+// does not, and reports the outcome in the TargetNamespaceReady condition. It never blocks the
+// reconciliation: a namespace that cannot be used shows up when the first object is created in it.
+func reconcileTargetNamespace(scope *ClusterScope) {
+	logger := log.FromContext(scope.Ctx)
+
+	// Set TargetNamespaceReady condition to in progress
+	conditions.Set(scope.HarvesterCluster, v1.Condition{
+		Type:    infrav1.TargetNamespaceReadyCondition,
+		Status:  v1.ConditionFalse,
+		Reason:  "TargetNamespaceChecking",
+		Message: "Checking if target namespace exists",
+	})
+
+	// Check if TargetNamespace exists, if not create it
+	_, err := scope.HarvesterClient.CoreV1().Namespaces().Get(scope.Ctx, scope.HarvesterCluster.Spec.TargetNamespace, v1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			_, err = scope.HarvesterClient.CoreV1().Namespaces().Create(scope.Ctx, &apiv1.Namespace{
+				ObjectMeta: v1.ObjectMeta{
+					Name: scope.HarvesterCluster.Spec.TargetNamespace,
+				},
+			}, v1.CreateOptions{})
+			if err != nil {
+				logger.Error(err, "unable to create TargetNamespace")
+
+				conditions.Set(scope.HarvesterCluster, v1.Condition{
+					Type:    infrav1.TargetNamespaceReadyCondition,
+					Status:  v1.ConditionFalse,
+					Reason:  infrav1.TargetNamespaceNotReadyReason,
+					Message: fmt.Sprintf("Failed to create target namespace: %v", err),
+				})
+			} else {
+				logger.Error(err, "unable to get TargetNamespace in Harvester, problem with the HarvesterClient")
+
+				conditions.Set(scope.HarvesterCluster, v1.Condition{
+					Type:    infrav1.TargetNamespaceReadyCondition,
+					Status:  v1.ConditionFalse,
+					Reason:  infrav1.TargetNamespaceNotReadyReason,
+					Message: fmt.Sprintf("Unable to access target namespace: %v", err),
+				})
+			}
+		} else {
+			logger.Error(err, "unable to get TargetNamespace in Harvester, problem with the HarvesterClient")
+
+			conditions.Set(scope.HarvesterCluster, v1.Condition{
+				Type:    infrav1.TargetNamespaceReadyCondition,
+				Status:  v1.ConditionFalse,
+				Reason:  infrav1.TargetNamespaceNotReadyReason,
+				Message: fmt.Sprintf("Unable to access target namespace: %v", err),
+			})
+		}
+	} else {
+		// Target namespace exists and is accessible
+		conditions.Set(scope.HarvesterCluster, v1.Condition{
+			Type:    infrav1.TargetNamespaceReadyCondition,
+			Status:  v1.ConditionTrue,
+			Reason:  infrav1.TargetNamespaceReadyReason,
+			Message: "Target namespace exists and is accessible",
+		})
+	}
 }
 
 func createPlaceholderSVC(lbName string, scope *ClusterScope, lbIP string) error {
