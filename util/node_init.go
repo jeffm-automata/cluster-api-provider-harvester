@@ -48,15 +48,17 @@ func InitializeWorkloadNode(ctx context.Context, logger logr.Logger, workloadCon
 }
 
 // InitializeWorkloadNodeWithAddresses does what InitializeWorkloadNode does and, in addition,
-// publishes the given addresses in the status of a node that has none.
+// publishes the given addresses in the status of a node that has no IP address there.
 //
-// A kubelet started with cloud-provider=external leaves status.addresses to a cloud controller
-// manager. Where none runs (the Harvester cloud provider needs an identity with cluster-wide
-// rights on Harvester, which a namespace tenant cannot create), the node keeps no address:
-// "kubectl logs", "exec" and "top", and anything else that connects to the kubelet, fail.
-// The provider already knows the addresses of the VM, so it fills them in, as it does for the
-// providerID. Addresses that are already there are never touched: a kubelet with its own
-// cloud provider setting, or a cloud controller manager, stays in charge.
+// A kubelet started with cloud-provider=external and no node IP of its own publishes only its
+// host name and leaves the IP addresses to a cloud controller manager. Where none runs (the
+// Harvester cloud provider needs an identity with cluster-wide rights on Harvester, which a
+// namespace tenant cannot create), the node keeps no InternalIP: its host-network pods have no
+// hostIP or podIP, and whatever addresses the kubelet by InternalIP, such as the metrics server
+// behind "kubectl top" and autoscaling, cannot reach it. The provider already knows the
+// addresses of the VM, so it fills them in, as it does for the providerID. IP addresses that are
+// already there are never touched: a kubelet that sets them itself, or a cloud controller
+// manager, stays in charge.
 func InitializeWorkloadNodeWithAddresses(
 	ctx context.Context,
 	logger logr.Logger,
@@ -89,7 +91,7 @@ func InitializeWorkloadNodeWithAddresses(
 
 	needsProviderID := node.Spec.ProviderID == ""
 	needsTaintRemoval := hasUninitializedTaint(node)
-	needsAddresses := len(node.Status.Addresses) == 0 && len(addresses) > 0
+	needsAddresses := !hasIPAddress(node) && len(addresses) > 0
 
 	if !needsProviderID && !needsTaintRemoval && !needsAddresses {
 		return true
@@ -151,7 +153,19 @@ func InitializeWorkloadNodeWithAddresses(
 	return true
 }
 
-// setNodeAddresses writes status.addresses of a workload cluster node that has none.
+// hasIPAddress returns true if the node status carries an internal or external IP address.
+// The host name alone, which a kubelet without a cloud provider's help publishes, does not count.
+func hasIPAddress(node *v1.Node) bool {
+	for _, address := range node.Status.Addresses {
+		if address.Type == v1.NodeInternalIP || address.Type == v1.NodeExternalIP {
+			return true
+		}
+	}
+
+	return false
+}
+
+// setNodeAddresses writes status.addresses of a workload cluster node that has no IP address there.
 func setNodeAddresses(ctx context.Context, logger logr.Logger, clientset kubernetes.Interface, nodeName string, addresses []v1.NodeAddress) bool {
 	addressesJSON, err := json.Marshal(addresses)
 	if err != nil {

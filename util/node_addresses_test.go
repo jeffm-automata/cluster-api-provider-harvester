@@ -150,8 +150,25 @@ var _ = Describe("InitializeWorkloadNodeWithAddresses", func() {
 		Expect(s.writes).To(Equal([]string{"status.addresses"}))
 	})
 
-	It("never touches addresses that something else has published", func() {
-		published := []v1.NodeAddress{{Type: v1.NodeInternalIP, Address: "198.51.100.5"}}
+	It("publishes them on a node whose kubelet has published its host name only", func() {
+		s := &recordingNodeServer{node: newNode()}
+		s.node.Status.Addresses = []v1.NodeAddress{{Type: v1.NodeHostName, Address: "node-1"}}
+
+		server, config := s.start()
+
+		defer server.Close()
+
+		Expect(InitializeWorkloadNodeWithAddresses(context.Background(), logr.Discard(), config,
+			"node-1", "harvester://uid", vmAddresses)).To(BeTrue())
+		Expect(s.node.Status.Addresses).To(Equal(vmAddresses))
+		Expect(s.writes).To(Equal([]string{"status.addresses", "spec.providerID", "spec.taints"}))
+	})
+
+	It("never touches IP addresses that something else has published", func() {
+		published := []v1.NodeAddress{
+			{Type: v1.NodeInternalIP, Address: "198.51.100.5"},
+			{Type: v1.NodeHostName, Address: "node-1"},
+		}
 
 		s := &recordingNodeServer{node: newNode()}
 		s.node.Status.Addresses = published
@@ -164,6 +181,21 @@ var _ = Describe("InitializeWorkloadNodeWithAddresses", func() {
 			"node-1", "harvester://uid", vmAddresses)).To(BeTrue())
 		Expect(s.node.Status.Addresses).To(Equal(published))
 		Expect(s.writes).To(Equal([]string{"spec.providerID", "spec.taints"}))
+	})
+
+	It("leaves a node alone that has an external IP address only", func() {
+		published := []v1.NodeAddress{{Type: v1.NodeExternalIP, Address: "203.0.113.9"}}
+
+		s := &recordingNodeServer{node: newNode()}
+		s.node.Status.Addresses = published
+
+		server, config := s.start()
+
+		defer server.Close()
+
+		Expect(InitializeWorkloadNodeWithAddresses(context.Background(), logr.Discard(), config,
+			"node-1", "harvester://uid", vmAddresses)).To(BeTrue())
+		Expect(s.node.Status.Addresses).To(Equal(published))
 	})
 
 	It("writes nothing to the status when no address is known", func() {
