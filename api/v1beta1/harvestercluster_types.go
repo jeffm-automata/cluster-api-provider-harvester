@@ -34,6 +34,11 @@ const (
 	DHCP = "dhcp"
 	// POOL is one of the possible values for the IPAMType field in the LoadBalancerConfig.
 	POOL = "pool"
+	// EXTERNAL is one of the possible values for the IPAMType field in the LoadBalancerConfig.
+	// No load balancer is created in Harvester: the address in spec.controlPlaneEndpoint is
+	// provided and kept reachable by the user (kube-vip on the control plane nodes, an
+	// existing load balancer, a DNS name).
+	EXTERNAL = "external"
 )
 
 const (
@@ -46,6 +51,11 @@ const (
 	LoadBalancerNoBackendMachineReason = "LoadBalancerNoBackendMachine"
 	// LoadBalancerHealthcheckFailedReason documents the reason why the load balancer is not ready.
 	LoadBalancerHealthcheckFailedReason = "LoadBalancerHealthcheckFailed"
+	// LoadBalancerExternallyManagedReason documents that no load balancer is created in Harvester
+	// because the control plane endpoint is provided by the user.
+	LoadBalancerExternallyManagedReason = "LoadBalancerExternallyManaged"
+	// ControlPlaneEndpointNotSetReason documents that the user-provided control plane endpoint is missing.
+	ControlPlaneEndpointNotSetReason = "ControlPlaneEndpointNotSet"
 	// CustomIPPoolCreatedCondition documents if a custom IP Pool was created in Harvester.
 	CustomIPPoolCreatedCondition string = "CustomIPPoolCreated"
 	// CustomPoolCreationInHarvesterFailedReason documents the reason why a custom pool was unable to be created.
@@ -131,6 +141,8 @@ type HarvesterClusterSpec struct {
 	LoadBalancerConfig LoadBalancerConfig `json:"loadBalancerConfig"`
 
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+	// It is written by the controller from the Harvester load balancer, except when
+	// loadBalancerConfig.ipamType is "external": then it must be set by the user and is never changed.
 	// +optional
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
 
@@ -211,7 +223,10 @@ type SecretKey struct {
 // LoadBalancerConfig describes how the load balancer should be created in Harvester.
 type LoadBalancerConfig struct {
 	// IPAMType is the configuration of IP addressing for the control plane load balancer.
-	// This can take two values, either "dhcp" or "ippool".
+	// "dhcp" and "pool" create a load balancer in Harvester and write its address to
+	// spec.controlPlaneEndpoint, replacing any value set there. "external" creates no load
+	// balancer and no Service in Harvester and leaves spec.controlPlaneEndpoint, which is then
+	// required, exactly as the user set it.
 	IPAMType IPAMType `json:"ipamType"`
 
 	// IpPoolRef is a reference to an existing IpPool object in Harvester's cluster.
@@ -231,8 +246,9 @@ type LoadBalancerConfig struct {
 	Description string `json:"description,omitempty"`
 }
 
-// IPAMType describes the way the LoadBalancer IP should be created, using DHCP or using an IPPool defined in Harvester.
-// +kubebuilder:validation:Enum:=dhcp;pool
+// IPAMType describes the way the LoadBalancer IP should be created, using DHCP or using an IPPool defined in Harvester,
+// or that the control plane endpoint is provided by the user and no LoadBalancer is created.
+// +kubebuilder:validation:Enum:=dhcp;pool;external
 type IPAMType string
 
 // IpPool is a description of a new IPPool to be created in Harvester.

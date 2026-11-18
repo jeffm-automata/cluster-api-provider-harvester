@@ -853,7 +853,8 @@ Requirements:
 | `spec.targetNamespace` | Required, must not be empty |
 | `spec.identitySecret.name` | Required |
 | `spec.identitySecret.namespace` | Required |
-| `spec.loadBalancerConfig.ipamType` | Must be `"dhcp"` or `"pool"` |
+| `spec.loadBalancerConfig.ipamType` | Must be `"dhcp"`, `"pool"` or `"external"` |
+| `spec.controlPlaneEndpoint` | `host` and `port` are required when `ipamType` is `"external"` |
 | `spec.vmNetworkConfig.gateway` | Required, must be a valid IP address |
 | `spec.vmNetworkConfig.subnetMask` | Required, must be a valid IP address format |
 | `spec.vmNetworkConfig.ipPoolRef` or `ipPoolRefs` or `ipPool` | At least one must be set when vmNetworkConfig is specified |

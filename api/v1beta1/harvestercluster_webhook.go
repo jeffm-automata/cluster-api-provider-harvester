@@ -71,8 +71,17 @@ func validateHarvesterCluster(r *HarvesterCluster) (admission.Warnings, error) {
 		errs = append(errs, "spec.identitySecret.namespace is required")
 	}
 
-	if r.Spec.LoadBalancerConfig.IPAMType != IPAMType(DHCP) && r.Spec.LoadBalancerConfig.IPAMType != IPAMType(POOL) {
-		errs = append(errs, fmt.Sprintf("spec.loadBalancerConfig.ipamType must be %q or %q", DHCP, POOL))
+	switch r.Spec.LoadBalancerConfig.IPAMType {
+	case IPAMType(DHCP), IPAMType(POOL):
+	case IPAMType(EXTERNAL):
+		// No load balancer is created, so nothing but the user can provide the endpoint.
+		if r.Spec.ControlPlaneEndpoint.Host == "" || r.Spec.ControlPlaneEndpoint.Port <= 0 {
+			errs = append(errs, fmt.Sprintf(
+				"spec.controlPlaneEndpoint.host and spec.controlPlaneEndpoint.port are required when spec.loadBalancerConfig.ipamType is %q",
+				EXTERNAL))
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("spec.loadBalancerConfig.ipamType must be %q, %q or %q", DHCP, POOL, EXTERNAL))
 	}
 
 	if r.Spec.VMNetworkConfig != nil {

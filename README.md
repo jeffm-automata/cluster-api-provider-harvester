@@ -383,7 +383,7 @@ Harvester HCI (target)
 | `spec.targetNamespace` | string | Yes | Namespace on Harvester for VMs |
 | `spec.identitySecret.name` | string | Yes | Secret containing Harvester kubeconfig |
 | `spec.identitySecret.namespace` | string | Yes | Namespace of identity secret |
-| `spec.loadBalancerConfig.ipamType` | string | Yes | `pool` or `dhcp` |
+| `spec.loadBalancerConfig.ipamType` | string | Yes | `pool` or `dhcp` (a load balancer is created in Harvester and its address becomes the control plane endpoint), or `external` (no load balancer is created; `spec.controlPlaneEndpoint` is required and is used as set) |
 | `spec.vmNetworkConfig.gateway` | string | Yes* | Gateway IP (*required for pool IPAM) |
 | `spec.vmNetworkConfig.subnetMask` | string | Yes* | Subnet mask (e.g. "255.255.0.0") |
 | `spec.vmNetworkConfig.ipPoolRef` | string | No | Reference to a Harvester IPPool |

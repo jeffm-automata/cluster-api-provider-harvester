@@ -309,6 +309,12 @@ func (r *HarvesterClusterReconciler) ReconcileNormal(scope *ClusterScope) (res c
 
 	reconcileFailureDomains(scope)
 
+	// The control plane endpoint is provided by the user: no placeholder Service and no
+	// LoadBalancer are created in Harvester, and spec.controlPlaneEndpoint is left untouched.
+	if scope.HarvesterCluster.Spec.LoadBalancerConfig.IPAMType == infrav1.EXTERNAL {
+		return r.reconcileExternalControlPlaneEndpoint(scope)
+	}
+
 	ownedCPHarvesterMachines, err := r.getOwnedCPHarversterMachines(scope)
 	if err != nil {
 		logger.Error(err, "could not get ownerCPMachines")
@@ -737,6 +743,54 @@ func (r *HarvesterClusterReconciler) ReconcileDelete(scope *ClusterScope) (ctrl.
 	logger := log.FromContext(scope.Ctx)
 	logger.Info("Deleting Harvester Cluster ...", "cluster-name", scope.HarvesterCluster.Name, "cluster-namespace", scope.HarvesterCluster.Namespace)
 
+	// With a user-provided control plane endpoint nothing was created for the load balancer,
+	// and an identity limited to the target namespace may not even ask for those objects.
+	if scope.HarvesterCluster.Spec.LoadBalancerConfig.IPAMType != infrav1.EXTERNAL {
+		res, err := deleteLoadBalancerResources(scope)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	// Delete VM IP pool only if it was created by the controller (not pre-existing).
+	// Pre-existing pools referenced via IPPoolRef are shared resources and must not be deleted.
+	if conditions.IsTrue(scope.HarvesterCluster, infrav1.VMIPPoolCreatedByControllerCondition) {
+		vmPoolName := scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef
+
+		err := scope.HarvesterClient.LoadbalancerV1beta1().IPPools().Delete(
+			scope.Ctx, vmPoolName, v1.DeleteOptions{})
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "unable to delete VM IP Pool in Harvester", "pool", vmPoolName)
+
+				return ctrl.Result{RequeueAfter: requeueTimeLong}, err
+			}
+
+			logger.Info("VM IP Pool not found, skipping ...", "pool", vmPoolName)
+		} else {
+			logger.Info("VM IP Pool deleted (was created by controller)", "pool", vmPoolName)
+		}
+
+		conditions.Delete(scope.HarvesterCluster, infrav1.VMIPPoolCreatedByControllerCondition)
+	} else if scope.HarvesterCluster.Spec.VMNetworkConfig != nil && scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef != "" {
+		logger.Info("Skipping VM IP Pool deletion (pre-existing pool)", "pool", scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef)
+	}
+
+	logger.Info("Removing finalizer from HarvesterCluster ...",
+		"cluster-name", scope.HarvesterCluster.Name,
+		"cluster-namespace", scope.HarvesterCluster.Namespace)
+	// Remove both new and legacy finalizers to handle objects from before the migration.
+	controllerutil.RemoveFinalizer(scope.HarvesterCluster, infrav1.ClusterFinalizerLegacy)
+	controllerutil.RemoveFinalizer(scope.HarvesterCluster, infrav1.ClusterFinalizer)
+
+	return ctrl.Result{}, nil
+}
+
+// deleteLoadBalancerResources deletes what the controller created in Harvester for the control
+// plane load balancer: the LoadBalancer, its placeholder Service and the IP pools generated for it.
+func deleteLoadBalancerResources(scope *ClusterScope) (ctrl.Result, error) {
+	logger := log.FromContext(scope.Ctx)
+
 	err := scope.HarvesterClient.LoadbalancerV1beta1().LoadBalancers(scope.HarvesterCluster.Spec.TargetNamespace).Delete(
 		scope.Ctx,
 		locutil.GenerateRFC1035Name([]string{scope.HarvesterCluster.Namespace, scope.HarvesterCluster.Name, "lb"}),
@@ -805,36 +859,53 @@ func (r *HarvesterClusterReconciler) ReconcileDelete(scope *ClusterScope) (ctrl.
 
 	logger.V(5).Info("IP Pool deleted successfully") //nolint:mnd
 
-	// Delete VM IP pool only if it was created by the controller (not pre-existing).
-	// Pre-existing pools referenced via IPPoolRef are shared resources and must not be deleted.
-	if conditions.IsTrue(scope.HarvesterCluster, infrav1.VMIPPoolCreatedByControllerCondition) {
-		vmPoolName := scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef
+	return ctrl.Result{}, nil
+}
 
-		err := scope.HarvesterClient.LoadbalancerV1beta1().IPPools().Delete(
-			scope.Ctx, vmPoolName, v1.DeleteOptions{})
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				logger.Error(err, "unable to delete VM IP Pool in Harvester", "pool", vmPoolName)
+// reconcileExternalControlPlaneEndpoint handles a HarvesterCluster whose control plane endpoint
+// is provided by the user (spec.loadBalancerConfig.ipamType "external"). The infrastructure this
+// controller owns for such a cluster is nothing but the optional cloud provider configuration, so
+// the cluster is ready as soon as the endpoint is known. The endpoint is never written here.
+func (r *HarvesterClusterReconciler) reconcileExternalControlPlaneEndpoint(scope *ClusterScope) (ctrl.Result, error) {
+	endpoint := scope.HarvesterCluster.Spec.ControlPlaneEndpoint
+	if endpoint.Host == "" || endpoint.Port <= 0 {
+		// The validating webhook rejects this; reported here as well for objects that bypassed it.
+		scope.HarvesterCluster.Status.Ready = false
 
-				return ctrl.Result{RequeueAfter: requeueTimeLong}, err
-			}
+		conditions.Set(scope.HarvesterCluster, v1.Condition{
+			Type:   infrav1.InfrastructureReadyCondition,
+			Status: v1.ConditionFalse,
+			Reason: infrav1.ControlPlaneEndpointNotSetReason,
+			Message: "spec.controlPlaneEndpoint host and port must be set when spec.loadBalancerConfig.ipamType is " +
+				infrav1.EXTERNAL,
+		})
 
-			logger.Info("VM IP Pool not found, skipping ...", "pool", vmPoolName)
-		} else {
-			logger.Info("VM IP Pool deleted (was created by controller)", "pool", vmPoolName)
-		}
-
-		conditions.Delete(scope.HarvesterCluster, infrav1.VMIPPoolCreatedByControllerCondition)
-	} else if scope.HarvesterCluster.Spec.VMNetworkConfig != nil && scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef != "" {
-		logger.Info("Skipping VM IP Pool deletion (pre-existing pool)", "pool", scope.HarvesterCluster.Spec.VMNetworkConfig.IPPoolRef)
+		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Removing finalizer from HarvesterCluster ...",
-		"cluster-name", scope.HarvesterCluster.Name,
-		"cluster-namespace", scope.HarvesterCluster.Namespace)
-	// Remove both new and legacy finalizers to handle objects from before the migration.
-	controllerutil.RemoveFinalizer(scope.HarvesterCluster, infrav1.ClusterFinalizerLegacy)
-	controllerutil.RemoveFinalizer(scope.HarvesterCluster, infrav1.ClusterFinalizer)
+	err := r.reconcileCloudProviderConfig(scope)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: requeueTimeLong}, err
+	}
+
+	scope.HarvesterCluster.Status.Ready = true
+
+	conditions.Set(scope.HarvesterCluster, v1.Condition{
+		Type:    infrav1.LoadBalancerReadyCondition,
+		Status:  v1.ConditionTrue,
+		Reason:  infrav1.LoadBalancerExternallyManagedReason,
+		Message: "No load balancer is created in Harvester: the control plane endpoint is provided by the user",
+	})
+
+	conditions.Set(scope.HarvesterCluster, v1.Condition{
+		Type:    infrav1.InfrastructureReadyCondition,
+		Status:  v1.ConditionTrue,
+		Reason:  infrav1.InfrastructureReadyReason,
+		Message: "All infrastructure components are ready",
+	})
+
+	// Fleet integration: propagate labels after Turtles import (best-effort, does not block provisioning)
+	r.reconcileFleetIntegration(scope)
 
 	return ctrl.Result{}, nil
 }

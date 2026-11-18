@@ -54,8 +54,10 @@ spec:
             description: HarvesterClusterSpec defines the desired state of HarvesterCluster.
             properties:
               controlPlaneEndpoint:
-                description: ControlPlaneEndpoint represents the endpoint used to
-                  communicate with the control plane.
+                description: |-
+                  ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+                  It is written by the controller from the Harvester load balancer, except when
+                  loadBalancerConfig.ipamType is "external": then it must be set by the user and is never changed.
                 minProperties: 1
                 properties:
                   host:
@@ -134,10 +136,14 @@ spec:
                   ipamType:
                     description: |-
                       IPAMType is the configuration of IP addressing for the control plane load balancer.
-                      This can take two values, either "dhcp" or "ippool".
+                      "dhcp" and "pool" create a load balancer in Harvester and write its address to
+                      spec.controlPlaneEndpoint, replacing any value set there. "external" creates no load
+                      balancer and no Service in Harvester and leaves spec.controlPlaneEndpoint, which is then
+                      required, exactly as the user set it.
                     enum:
                     - dhcp
                     - pool
+                    - external
                     type: string
                   listeners:
                     description: Listeners is a list of listeners that should be created
@@ -468,8 +474,10 @@ spec:
             description: HarvesterClusterSpec defines the desired state of HarvesterCluster.
             properties:
               controlPlaneEndpoint:
-                description: ControlPlaneEndpoint represents the endpoint used to
-                  communicate with the control plane.
+                description: |-
+                  ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+                  It is written by the controller from the Harvester load balancer, except when
+                  loadBalancerConfig.ipamType is "external": then it must be set by the user and is never changed.
                 minProperties: 1
                 properties:
                   host:
@@ -548,10 +556,14 @@ spec:
                   ipamType:
                     description: |-
                       IPAMType is the configuration of IP addressing for the control plane load balancer.
-                      This can take two values, either "dhcp" or "ippool".
+                      "dhcp" and "pool" create a load balancer in Harvester and write its address to
+                      spec.controlPlaneEndpoint, replacing any value set there. "external" creates no load
+                      balancer and no Service in Harvester and leaves spec.controlPlaneEndpoint, which is then
+                      required, exactly as the user set it.
                     enum:
                     - dhcp
                     - pool
+                    - external
                     type: string
                   listeners:
                     description: Listeners is a list of listeners that should be created

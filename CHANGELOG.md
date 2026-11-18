@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **User-provided control plane endpoint** (`spec.loadBalancerConfig.ipamType:
+  external`): no placeholder Service and no LoadBalancer are created in
+  Harvester, `spec.controlPlaneEndpoint` (then required) is used as set and is
+  never overwritten, and the HarvesterCluster is ready as soon as it is
+  reconciled. For control planes that bring their own address (kube-vip on the
+  control plane nodes, an existing load balancer, a DNS name), and for
+  identities that may not create Harvester load balancers. `dhcp` and `pool`
+  behave as before: the load balancer address replaces whatever was set.
+
 ### Fixed
 
 - **Namespace-scoped Harvester identities are accepted**: the HarvesterCluster
