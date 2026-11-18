@@ -531,6 +531,15 @@ func reconcileTargetNamespace(scope *ClusterScope) {
 					Message: fmt.Sprintf("Unable to access target namespace: %v", err),
 				})
 			}
+		} else if apierrors.IsForbidden(err) && conditions.IsTrue(scope.HarvesterCluster, infrav1.HarvesterConnectionReadyCondition) {
+			// A namespace-scoped identity may not read the Namespace object itself. The
+			// connection check has already listed VirtualMachines in it, so it exists.
+			conditions.Set(scope.HarvesterCluster, v1.Condition{
+				Type:    infrav1.TargetNamespaceReadyCondition,
+				Status:  v1.ConditionTrue,
+				Reason:  infrav1.TargetNamespaceReadyReason,
+				Message: "Target namespace is accessible (the identity may not read the Namespace object itself)",
+			})
 		} else {
 			logger.Error(err, "unable to get TargetNamespace in Harvester, problem with the HarvesterClient")
 
@@ -1333,31 +1342,45 @@ func (r *HarvesterClusterReconciler) reconcileHarvesterConfig(ctx context.Contex
 		return &rest.Config{}, err
 	}
 
-	harvesterDeployment, err := hvClient.AppsV1().Deployments(harvesterNamespace).Get(ctx, harvesterDeploymentName, v1.GetOptions{})
+	hvNamespacedClient, err := lbclient.NewForConfig(hvRESTConfig)
 	if err != nil {
-		logger.Error(err, "Harvester deployment not found on target Kubernetes cluster")
+		logger.Error(err, "unable to create Harvester client from restConfig")
 
 		conditions.Set(cluster, v1.Condition{
 			Type:    infrav1.HarvesterConnectionReadyCondition,
 			Status:  v1.ConditionFalse,
 			Reason:  infrav1.HarvesterConnectionFailedReason,
-			Message: fmt.Sprintf("Harvester deployment not found: %v", err),
+			Message: fmt.Sprintf("Failed to create Harvester client: %v", err),
 		})
 
 		return &rest.Config{}, err
 	}
 
-	if !isHarvesterAvailable(harvesterDeployment.Status.Conditions) {
-		logger.Error(err, "harvester cluster is unavailable")
+	namespaceScoped, err := checkHarvesterConnection(ctx, hvClient, hvNamespacedClient, cluster.Spec.TargetNamespace)
+	if err != nil {
+		logger.Error(err, "Harvester connection check failed")
 
 		conditions.Set(cluster, v1.Condition{
 			Type:    infrav1.HarvesterConnectionReadyCondition,
 			Status:  v1.ConditionFalse,
 			Reason:  infrav1.HarvesterConnectionFailedReason,
-			Message: "Harvester cluster is unavailable",
+			Message: err.Error(),
 		})
 
-		return &rest.Config{}, errors.New("harvester cluster is unavailable")
+		return &rest.Config{}, err
+	}
+
+	if namespaceScoped {
+		// Set HarvesterConnectionReady condition to true: the identity is valid for the target namespace
+		conditions.Set(cluster, v1.Condition{
+			Type:   infrav1.HarvesterConnectionReadyCondition,
+			Status: v1.ConditionTrue,
+			Reason: infrav1.HarvesterConnectionReadyReason,
+			Message: "Successfully connected and authenticated to Harvester API with an identity scoped to namespace " +
+				cluster.Spec.TargetNamespace,
+		})
+
+		return hvRESTConfig, nil
 	}
 
 	// Set HarvesterConnectionReady condition to true
@@ -1590,6 +1613,44 @@ func (r *HarvesterClusterReconciler) findObjectsForSecret(ctx context.Context, s
 	}
 
 	return requests
+}
+
+// checkHarvesterConnection verifies that the identity can reach and use the Harvester API.
+//
+// The health of Harvester itself is read from the harvester-system/harvester Deployment. An
+// identity that is limited to its own namespace (a tenant ServiceAccount, or a Rancher project
+// member reaching Harvester through the Rancher proxy) may not read that namespace: the API server
+// then answers Forbidden, which already proves that it is reachable and that the credentials
+// authenticate. In that case the check falls back to listing VirtualMachines in the target
+// namespace, the one thing every identity usable by this provider must be allowed to do, and
+// reports the identity as namespace scoped.
+func checkHarvesterConnection(
+	ctx context.Context,
+	kubeClient kubeclient.Interface,
+	hvClient lbclient.Interface,
+	targetNamespace string,
+) (namespaceScoped bool, err error) {
+	harvesterDeployment, err := kubeClient.AppsV1().Deployments(harvesterNamespace).Get(ctx, harvesterDeploymentName, v1.GetOptions{})
+	if err == nil {
+		if !isHarvesterAvailable(harvesterDeployment.Status.Conditions) {
+			return false, errors.New("harvester cluster is unavailable")
+		}
+
+		return false, nil
+	}
+
+	if !apierrors.IsForbidden(err) {
+		return false, errors.Wrap(err, "Harvester deployment not found")
+	}
+
+	_, listErr := hvClient.KubevirtV1().VirtualMachines(targetNamespace).List(ctx, v1.ListOptions{Limit: 1})
+	if listErr != nil {
+		return false, errors.Wrapf(listErr,
+			"the identity may neither read the Harvester deployment (%v) nor list VirtualMachines in namespace %s",
+			err, targetNamespace)
+	}
+
+	return true, nil
 }
 
 // isHarvesterAvailable is a function that parses all conditions for the Available type and Status == True.

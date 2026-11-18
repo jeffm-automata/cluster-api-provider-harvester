@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Namespace-scoped Harvester identities are accepted**: the HarvesterCluster
+  controller began every reconcile by reading the `harvester-system/harvester`
+  Deployment. An identity limited to its own namespace (a ServiceAccount with a
+  Role there, or a Rancher project member reaching Harvester through the Rancher
+  proxy) is forbidden to do that, so the cluster never became ready. When that
+  read is forbidden the controller now checks that it can list VirtualMachines in
+  `spec.targetNamespace` instead. A forbidden read of the Namespace object itself
+  no longer reports `TargetNamespaceReady=False` once that check has passed.
 - **Harvester v1.9 endpoint lookup**: the cloud provider kubeconfig was built
   from the VIP published on the `kube-system/ingress-expose` Service, which
   Harvester v1.9 no longer ships, so every cluster failed with "unable to
