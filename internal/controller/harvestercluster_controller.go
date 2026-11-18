@@ -843,6 +843,13 @@ func deleteLoadBalancerResources(scope *ClusterScope) (ctrl.Result, error) {
 
 	logger.V(5).Info("Load Balancer Service deleted successfully") //nolint:mnd
 
+	// An IP pool is generated for the load balancer in pool mode only. IP pools are cluster
+	// scoped: an identity limited to the target namespace gets 403 Forbidden, not 404, when it
+	// asks to delete one that does not exist, so do not ask when none can have been created.
+	if scope.HarvesterCluster.Spec.LoadBalancerConfig.IPAMType != infrav1.POOL {
+		return ctrl.Result{}, nil
+	}
+
 	err = scope.HarvesterClient.LoadbalancerV1beta1().IPPools().Delete(
 		scope.Ctx,
 		locutil.GenerateRFC1035Name([]string{scope.HarvesterCluster.Namespace, scope.HarvesterCluster.Name, "ippool"}),

@@ -183,3 +183,53 @@ var _ = Describe("HarvesterCluster with a user-provided control plane endpoint",
 		Expect(scope.HarvesterCluster.Spec.ControlPlaneEndpoint.Host).To(Equal("198.51.100.7"))
 	})
 })
+
+// A tenant ServiceAccount can be given rights on load balancers in its namespace (dhcp mode),
+// but IP pools are cluster scoped and stay out of reach.
+var _ = Describe("HarvesterCluster deletion in dhcp mode with a namespace-scoped identity", func() {
+	It("deletes the LoadBalancer and its Service and does not ask for IP pools", func() {
+		hv := hvfake.NewSimpleClientset()
+		hv.PrependReactor(forbid("*", "ippools"))
+
+		scheme := runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		Expect(infrav1.AddToScheme(scheme)).To(Succeed())
+		Expect(clusterv1.AddToScheme(scheme)).To(Succeed())
+
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		hvCluster := &infrav1.HarvesterCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "capi-ns", Finalizers: []string{infrav1.ClusterFinalizer}},
+			Spec: infrav1.HarvesterClusterSpec{
+				TargetNamespace:    "tenant-ns",
+				LoadBalancerConfig: infrav1.LoadBalancerConfig{IPAMType: infrav1.DHCP},
+			},
+		}
+
+		_, err := hv.CoreV1().Services("tenant-ns").Create(context.TODO(), &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "capi-ns-c1-lb", Namespace: "tenant-ns"},
+		}, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		r := &HarvesterClusterReconciler{Client: fakeClient, Scheme: scheme}
+
+		result, err := r.ReconcileDelete(&ClusterScope{
+			Ctx:              context.TODO(),
+			Logger:           log.FromContext(context.TODO()),
+			Cluster:          &clusterv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "capi-ns"}},
+			HarvesterCluster: hvCluster,
+			HarvesterClient:  hv,
+			ReconcileClient:  fakeClient,
+		})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		Expect(hvCluster.Finalizers).To(BeEmpty())
+
+		_, err = hv.CoreV1().Services("tenant-ns").Get(context.TODO(), "capi-ns-c1-lb", metav1.GetOptions{})
+		Expect(err).To(HaveOccurred(), "the placeholder Service is deleted")
+
+		for _, action := range hv.Actions() {
+			Expect(action.GetResource().Resource).ToNot(Equal("ippools"))
+		}
+	})
+})
