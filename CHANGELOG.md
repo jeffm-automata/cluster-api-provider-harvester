@@ -17,6 +17,17 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Nodes without an IP address when no cloud controller manager runs**: with
+  kubelet publishes only its host name and leaves the IP addresses of its Node
+  to a cloud controller manager. Where the Harvester cloud provider is not
+  deployed, for example because the identity is limited to a namespace and
+  cannot create the provider's own identity, nodes had no `InternalIP`:
+  host-network pods had no `hostIP`/`podIP` and the metrics server could not
+  reach the kubelet (`kubectl top`, autoscaling). When the provider initializes
+  a workload node (provider ID, uninitialized taint) it now also publishes the
+  VM's addresses, from the interfaces of the VM definition as reported by the
+  guest agent, if the node has no IP address. Existing IP addresses are never
+  changed.
 - **Namespace-scoped Harvester identities are accepted**: the HarvesterCluster
   controller began every reconcile by reading the `harvester-system/harvester`
   Deployment. An identity limited to its own namespace (a ServiceAccount with a
