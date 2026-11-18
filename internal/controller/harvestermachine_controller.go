@@ -587,17 +587,74 @@ func (r *HarvesterMachineReconciler) initializeWorkloadNode(hvScope *Scope) bool
 
 	initStart := time.Now()
 
-	initialized := locutil.InitializeWorkloadNode(
+	nodeAddresses, err := getNodeAddresses(hvScope)
+	if err != nil {
+		// Without the VM instance the addresses are unknown: retry rather than declare a
+		// node initialized that may be left without any address.
+		return false
+	}
+
+	initialized := locutil.InitializeWorkloadNodeWithAddresses(
 		hvScope.Ctx,
 		*hvScope.Logger,
 		workloadConfig,
 		hvScope.HarvesterMachine.Name,
 		hvScope.HarvesterMachine.Spec.ProviderID,
+		nodeAddresses,
 	)
 
 	caphvmetrics.NodeInitDuration.Observe(time.Since(initStart).Seconds())
 
 	return initialized
+}
+
+// getNodeAddresses returns the addresses to publish on the workload cluster node of this
+// machine when nothing else has published any. The list is empty when the guest agent reports none.
+func getNodeAddresses(hvScope *Scope) ([]v1.NodeAddress, error) {
+	vmi, err := hvScope.HarvesterClient.KubevirtV1().VirtualMachineInstances(hvScope.HarvesterCluster.Spec.TargetNamespace).Get(
+		hvScope.Ctx, hvScope.HarvesterMachine.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return nodeAddressesFromVMI(vmi, hvScope.HarvesterMachine.Name, hvScope.HarvesterCluster.Spec.ControlPlaneEndpoint.Host), nil
+}
+
+// nodeAddressesFromVMI derives node addresses from what the guest agent reports for a VM: one
+// InternalIP per network interface of the VM definition, and the Hostname. Interfaces that exist
+// only inside the guest (CNI bridges and tunnels, which carry no name of the VM definition) are
+// left out, and so are link-local addresses and the control plane endpoint, which a virtual IP
+// manager such as kube-vip adds to the interface of whichever control plane node currently holds it.
+func nodeAddressesFromVMI(vmi *kubevirtv1.VirtualMachineInstance, nodeName, controlPlaneHost string) []v1.NodeAddress {
+	addresses := []v1.NodeAddress{}
+
+	for _, nic := range vmi.Status.Interfaces {
+		if nic.Name == "" {
+			continue
+		}
+
+		candidates := nic.IPs
+		if len(candidates) == 0 && nic.IP != "" {
+			candidates = []string{nic.IP}
+		}
+
+		for _, ip := range candidates {
+			parsed := net.ParseIP(ip)
+			if parsed == nil || parsed.IsLinkLocalUnicast() || ip == controlPlaneHost {
+				continue
+			}
+
+			addresses = append(addresses, v1.NodeAddress{Type: v1.NodeInternalIP, Address: ip})
+
+			break
+		}
+	}
+
+	if len(addresses) == 0 {
+		return nil
+	}
+
+	return append(addresses, v1.NodeAddress{Type: v1.NodeHostName, Address: nodeName})
 }
 
 func getProviderIDFromWorkloadCluster(hvScope *Scope) (string, error) {

@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **Nodes without addresses when no cloud controller manager runs**: with
+  `cloudProviderName: external` (needed for the `harvester://` provider ID) the
+  kubelet leaves `status.addresses` of its Node to a cloud controller manager.
+  Where the Harvester cloud provider is not deployed, for example because the
+  identity is limited to a namespace and cannot create the provider's own
+  identity, nodes had no address and `kubectl logs`, `exec` and `top` failed.
+  When the provider initializes a workload node (provider ID, uninitialized
+  taint) it now also publishes the VM's addresses, from the interfaces of the
+  VM definition as reported by the guest agent, if the node has none. Existing
+  addresses are never changed.
 - **Harvester v1.9 endpoint lookup**: the cloud provider kubeconfig was built
   from the VIP published on the `kube-system/ingress-expose` Service, which
   Harvester v1.9 no longer ships, so every cluster failed with "unable to

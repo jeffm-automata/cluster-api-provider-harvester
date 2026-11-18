@@ -44,6 +44,26 @@ const (
 // This is a best-effort operation: all errors are logged as warnings
 // and do not propagate, so it never blocks the reconcile loop.
 func InitializeWorkloadNode(ctx context.Context, logger logr.Logger, workloadConfig *rest.Config, nodeName, providerID string) bool {
+	return InitializeWorkloadNodeWithAddresses(ctx, logger, workloadConfig, nodeName, providerID, nil)
+}
+
+// InitializeWorkloadNodeWithAddresses does what InitializeWorkloadNode does and, in addition,
+// publishes the given addresses in the status of a node that has none.
+//
+// A kubelet started with cloud-provider=external leaves status.addresses to a cloud controller
+// manager. Where none runs (the Harvester cloud provider needs an identity with cluster-wide
+// rights on Harvester, which a namespace tenant cannot create), the node keeps no address:
+// "kubectl logs", "exec" and "top", and anything else that connects to the kubelet, fail.
+// The provider already knows the addresses of the VM, so it fills them in, as it does for the
+// providerID. Addresses that are already there are never touched: a kubelet with its own
+// cloud provider setting, or a cloud controller manager, stays in charge.
+func InitializeWorkloadNodeWithAddresses(
+	ctx context.Context,
+	logger logr.Logger,
+	workloadConfig *rest.Config,
+	nodeName, providerID string,
+	addresses []v1.NodeAddress,
+) bool {
 	if providerID == "" {
 		return false
 	}
@@ -69,9 +89,17 @@ func InitializeWorkloadNode(ctx context.Context, logger logr.Logger, workloadCon
 
 	needsProviderID := node.Spec.ProviderID == ""
 	needsTaintRemoval := hasUninitializedTaint(node)
+	needsAddresses := len(node.Status.Addresses) == 0 && len(addresses) > 0
 
-	if !needsProviderID && !needsTaintRemoval {
+	if !needsProviderID && !needsTaintRemoval && !needsAddresses {
 		return true
+	}
+
+	if needsAddresses {
+		// Before the taint is removed, so that pods never start on a node without an address.
+		if !setNodeAddresses(ctx, logger, clientset, nodeName, addresses) {
+			return false
+		}
 	}
 
 	if needsProviderID {
@@ -119,6 +147,29 @@ func InitializeWorkloadNode(ctx context.Context, logger logr.Logger, workloadCon
 			logger.Info("Removed cloud-provider uninitialized taint", "node", nodeName)
 		}
 	}
+
+	return true
+}
+
+// setNodeAddresses writes status.addresses of a workload cluster node that has none.
+func setNodeAddresses(ctx context.Context, logger logr.Logger, clientset kubernetes.Interface, nodeName string, addresses []v1.NodeAddress) bool {
+	addressesJSON, err := json.Marshal(addresses)
+	if err != nil {
+		logger.Info("Warning: failed to marshal node addresses", "error", err, "node", nodeName)
+
+		return false
+	}
+
+	patch := fmt.Sprintf(`{"status":{"addresses":%s}}`, addressesJSON)
+
+	_, err = clientset.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, []byte(patch), metav1.PatchOptions{}, "status")
+	if err != nil {
+		logger.Info("Warning: failed to set addresses on workload node", "error", err, "node", nodeName)
+
+		return false
+	}
+
+	logger.Info("Set addresses on workload node", "node", nodeName, "addresses", addresses)
 
 	return true
 }
